@@ -20,9 +20,10 @@ func objToDriverSandbox(obj *unstructured.Unstructured) *pb.DriverSandbox {
 		Namespace: obj.GetNamespace(),
 	}
 
-	// Extract status fields if present.
-	status, found, _ := unstructured.NestedMap(obj.Object, "status")
-	if found {
+	// Extract status fields if present. NestedMap returns an error only for
+	// type mismatches (e.g., status is a string), which we treat as absent.
+	status, found, err := unstructured.NestedMap(obj.Object, "status")
+	if err == nil && found {
 		sb.Status = statusFromMap(status)
 	}
 

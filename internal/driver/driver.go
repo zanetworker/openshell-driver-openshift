@@ -65,12 +65,23 @@ func New(namespace string, logger *slog.Logger) (*Driver, error) {
 		return nil, fmt.Errorf("build clientset: %w", err)
 	}
 
+	return NewWithClients(dynClient, clientset, namespace, logger), nil
+}
+
+// NewWithClients creates a Driver with pre-built K8s clients. Use this for
+// testing with fake clients or when the caller manages client lifecycle.
+func NewWithClients(
+	dynClient dynamic.Interface,
+	clientset kubernetes.Interface,
+	namespace string,
+	logger *slog.Logger,
+) *Driver {
 	return &Driver{
 		dynamic:   dynClient,
 		clientset: clientset,
 		namespace: namespace,
 		logger:    logger,
-	}, nil
+	}
 }
 
 func (d *Driver) GetCapabilities(
@@ -108,8 +119,20 @@ func (d *Driver) CreateSandbox(
 	req *pb.CreateSandboxRequest,
 ) (*pb.CreateSandboxResponse, error) {
 	sb := req.GetSandbox()
+	if sb.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "sandbox id is required")
+	}
+	if sb.GetName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "sandbox name is required")
+	}
 	spec := sb.GetSpec()
+	if spec == nil {
+		return nil, status.Error(codes.InvalidArgument, "sandbox spec is required")
+	}
 	tmpl := spec.GetTemplate()
+	if tmpl == nil || tmpl.GetImage() == "" {
+		return nil, status.Error(codes.InvalidArgument, "sandbox template with image is required")
+	}
 
 	labels := mergeMaps(tmpl.GetLabels(), map[string]string{
 		labelSandboxID: sb.GetId(),
@@ -219,7 +242,10 @@ func (d *Driver) ResolveSandboxEndpoint(
 	if sts := sb.GetStatus(); sts != nil && sts.GetInstanceId() != "" {
 		pod, err := d.clientset.CoreV1().Pods(d.namespace).
 			Get(ctx, sts.GetInstanceId(), metav1.GetOptions{})
-		if err == nil && pod.Status.PodIP != "" {
+		if err != nil {
+			d.logger.Warn("pod lookup failed, falling back to DNS",
+				"pod", sts.GetInstanceId(), "error", err)
+		} else if pod.Status.PodIP != "" {
 			return &pb.ResolveSandboxEndpointResponse{
 				Endpoint: &pb.SandboxEndpoint{
 					Target: &pb.SandboxEndpoint_Ip{Ip: pod.Status.PodIP},
@@ -303,7 +329,7 @@ func (d *Driver) buildPodSpec(sb *pb.DriverSandbox) map[string]interface{} {
 		"env":   buildEnvList(spec.GetEnvironment(), tmpl.GetEnvironment()),
 		"securityContext": map[string]interface{}{
 			"capabilities": map[string]interface{}{
-				"add": []string{"SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYSLOG"},
+				"add": []interface{}{"SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYSLOG"},
 			},
 		},
 	}
