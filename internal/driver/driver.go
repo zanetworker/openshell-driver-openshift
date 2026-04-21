@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	pb "github.com/zanetworker/openshell-driver-openshift/gen/computev1"
@@ -17,6 +18,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // Driver implements the ComputeDriverServer gRPC interface. It delegates
@@ -31,12 +33,23 @@ type Driver struct {
 	logger      *slog.Logger
 }
 
-// New creates a Driver that targets the given namespace. It uses in-cluster
-// config to authenticate to the Kubernetes API.
+// New creates a Driver using the best available K8s config: in-cluster if
+// running inside a pod, or kubeconfig from KUBECONFIG / ~/.kube/config
+// when running locally.
 func New(cfg Config, logger *slog.Logger) (*Driver, error) {
 	kubeConfig, err := rest.InClusterConfig()
 	if err != nil {
-		return nil, fmt.Errorf("build in-cluster config: %w", err)
+		// Fall back to kubeconfig for local development.
+		kubeconfigPath := os.Getenv("KUBECONFIG")
+		if kubeconfigPath == "" {
+			home, _ := os.UserHomeDir()
+			kubeconfigPath = home + "/.kube/config"
+		}
+		kubeConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("build kubeconfig from %s: %w", kubeconfigPath, err)
+		}
+		logger.Info("using kubeconfig", "path", kubeconfigPath)
 	}
 
 	dynClient, err := dynamic.NewForConfig(kubeConfig)
