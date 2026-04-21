@@ -19,6 +19,18 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 )
 
+func testConfig() Config {
+	cfg := DefaultConfig()
+	cfg.Namespace = "test-ns"
+	return cfg
+}
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelError,
+	}))
+}
+
 func newTestDriver(t *testing.T, objects ...runtime.Object) *Driver {
 	t.Helper()
 
@@ -34,11 +46,25 @@ func newTestDriver(t *testing.T, objects ...runtime.Object) *Driver {
 
 	clientset := kubefake.NewSimpleClientset()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelError,
-	}))
+	return NewWithClients(dynClient, clientset, testConfig(), testLogger())
+}
 
-	return NewWithClients(dynClient, clientset, "test-ns", logger)
+// newTestProvisioner returns a K8sProvisioner backed by fake clients for
+// tests that need direct provisioner access.
+func newTestProvisioner(t *testing.T) (*K8sProvisioner, *dynamicfake.FakeDynamicClient) {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	dynClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		scheme,
+		map[schema.GroupVersionResource]string{
+			sandboxGVR: "SandboxList",
+		},
+	)
+	clientset := kubefake.NewSimpleClientset()
+
+	p := NewK8sProvisioner(dynClient, clientset, testConfig(), testLogger())
+	return p, dynClient
 }
 
 func TestGetCapabilities(t *testing.T) {
@@ -193,8 +219,7 @@ func TestValidateSandboxCreate_GPUNoCapacity(t *testing.T) {
 		scheme,
 		map[schema.GroupVersionResource]string{sandboxGVR: "SandboxList"},
 	)
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	d := NewWithClients(dynClient, clientset, "test-ns", logger)
+	d := NewWithClients(dynClient, clientset, testConfig(), testLogger())
 
 	_, err := d.ValidateSandboxCreate(context.Background(), &pb.ValidateSandboxCreateRequest{
 		Sandbox: &pb.DriverSandbox{
@@ -245,10 +270,10 @@ func TestListSandboxes_Empty(t *testing.T) {
 }
 
 func TestListSandboxes_AfterCreate(t *testing.T) {
-	d := newTestDriver(t)
+	p, dynClient := newTestProvisioner(t)
 	ctx := context.Background()
 
-	// Prepopulate with an unstructured object.
+	// Prepopulate with an unstructured object via the dynamic client.
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "agents.x-k8s.io/v1alpha1",
@@ -262,18 +287,18 @@ func TestListSandboxes_AfterCreate(t *testing.T) {
 			},
 		},
 	}
-	_, err := d.dynamic.Resource(sandboxGVR).
+	_, err := dynClient.Resource(sandboxGVR).
 		Namespace("test-ns").
 		Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("pre-create: %v", err)
 	}
 
-	resp, err := d.ListSandboxes(ctx, &pb.ListSandboxesRequest{})
+	sandboxes, err := p.List(ctx)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(resp.Sandboxes) != 1 {
-		t.Errorf("expected 1 sandbox, got %d", len(resp.Sandboxes))
+	if len(sandboxes) != 1 {
+		t.Errorf("expected 1 sandbox, got %d", len(sandboxes))
 	}
 }

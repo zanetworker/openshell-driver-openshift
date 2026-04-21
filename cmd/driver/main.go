@@ -20,8 +20,16 @@ import (
 func main() {
 	socketPath := flag.String("socket", "/var/run/openshell-driver.sock",
 		"Unix domain socket path for the gRPC server")
-	namespace := flag.String("namespace", "openshell-system",
+
+	cfg := driver.DefaultConfig()
+	flag.StringVar(&cfg.Namespace, "namespace", cfg.Namespace,
 		"Kubernetes namespace where sandboxes are provisioned")
+	flag.StringVar(&cfg.SupervisorImage, "supervisor-image", cfg.SupervisorImage,
+		"Container image that contains the supervisor binary")
+	flag.StringVar(&cfg.SupervisorBinaryPath, "supervisor-binary-path", cfg.SupervisorBinaryPath,
+		"Path to the supervisor binary inside the supervisor image")
+	flag.StringVar(&cfg.SupervisorMountPath, "supervisor-mount-path", cfg.SupervisorMountPath,
+		"Mount path for the supervisor binary volume in the agent container")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -37,7 +45,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	d, err := driver.New(*namespace, logger)
+	d, err := driver.New(cfg, logger)
 	if err != nil {
 		logger.Error("failed to initialize driver", "error", err)
 		os.Exit(1)
@@ -56,7 +64,7 @@ func main() {
 		srv.GracefulStop()
 	}()
 
-	logger.Info("driver listening", "socket", *socketPath, "namespace", *namespace)
+	logger.Info("driver listening", "socket", *socketPath, "namespace", cfg.Namespace)
 	if err := srv.Serve(lis); err != nil {
 		logger.Error("server exited", "error", err)
 		os.Exit(1)

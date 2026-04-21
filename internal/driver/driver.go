@@ -8,64 +8,48 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	pb "github.com/zanetworker/openshell-driver-openshift/gen/computev1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
 
-var sandboxGVR = schema.GroupVersionResource{
-	Group:    "agents.x-k8s.io",
-	Version:  "v1alpha1",
-	Resource: "sandboxes",
-}
-
-const (
-	labelSandboxID = "openshell.ai/sandbox-id"
-	labelManagedBy = "openshell.ai/managed-by"
-	labelKagenti   = "kagenti.io/type"
-	sshPort        = 2222
-)
-
-// Driver implements the ComputeDriverServer gRPC interface. It provisions
-// sandboxes as agents.x-k8s.io/v1alpha1 Sandbox CRDs on an OpenShift cluster.
+// Driver implements the ComputeDriverServer gRPC interface. It delegates
+// sandbox lifecycle to a SandboxProvisioner and uses PlatformEnricher and
+// DriverMetrics for cross-cutting concerns.
 type Driver struct {
 	pb.UnimplementedComputeDriverServer
 
-	dynamic   dynamic.Interface
-	clientset kubernetes.Interface
-	namespace string
-	logger    *slog.Logger
+	provisioner SandboxProvisioner
+	enricher    PlatformEnricher
+	metrics     DriverMetrics
+	logger      *slog.Logger
 }
 
 // New creates a Driver that targets the given namespace. It uses in-cluster
 // config to authenticate to the Kubernetes API.
-func New(namespace string, logger *slog.Logger) (*Driver, error) {
-	config, err := rest.InClusterConfig()
+func New(cfg Config, logger *slog.Logger) (*Driver, error) {
+	kubeConfig, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("build in-cluster config: %w", err)
 	}
 
-	dynClient, err := dynamic.NewForConfig(config)
+	dynClient, err := dynamic.NewForConfig(kubeConfig)
 	if err != nil {
 		return nil, fmt.Errorf("build dynamic client: %w", err)
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err := kubernetes.NewForConfig(kubeConfig)
 	if err != nil {
 		return nil, fmt.Errorf("build clientset: %w", err)
 	}
 
-	return NewWithClients(dynClient, clientset, namespace, logger), nil
+	return NewWithClients(dynClient, clientset, cfg, logger), nil
 }
 
 // NewWithClients creates a Driver with pre-built K8s clients. Use this for
@@ -73,14 +57,26 @@ func New(namespace string, logger *slog.Logger) (*Driver, error) {
 func NewWithClients(
 	dynClient dynamic.Interface,
 	clientset kubernetes.Interface,
-	namespace string,
+	cfg Config,
+	logger *slog.Logger,
+) *Driver {
+	provisioner := NewK8sProvisioner(dynClient, clientset, cfg, logger)
+	return NewWithDeps(provisioner, &NoopEnricher{}, &NoopMetrics{}, logger)
+}
+
+// NewWithDeps creates a Driver with fully injected dependencies. Use this
+// for unit tests that provide mock implementations of all interfaces.
+func NewWithDeps(
+	provisioner SandboxProvisioner,
+	enricher PlatformEnricher,
+	metrics DriverMetrics,
 	logger *slog.Logger,
 ) *Driver {
 	return &Driver{
-		dynamic:   dynClient,
-		clientset: clientset,
-		namespace: namespace,
-		logger:    logger,
+		provisioner: provisioner,
+		enricher:    enricher,
+		metrics:     metrics,
+		logger:      logger,
 	}
 }
 
@@ -100,16 +96,8 @@ func (d *Driver) ValidateSandboxCreate(
 	ctx context.Context,
 	req *pb.ValidateSandboxCreateRequest,
 ) (*pb.ValidateSandboxCreateResponse, error) {
-	sb := req.GetSandbox()
-	if sb.GetSpec().GetGpu() {
-		ok, err := d.hasGPUCapacity(ctx)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "check GPU capacity: %v", err)
-		}
-		if !ok {
-			return nil, status.Error(codes.FailedPrecondition,
-				"no nodes with nvidia.com/gpu allocatable in the cluster")
-		}
+	if err := d.provisioner.ValidateCreate(ctx, req.GetSandbox()); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 	return &pb.ValidateSandboxCreateResponse{}, nil
 }
@@ -134,37 +122,13 @@ func (d *Driver) CreateSandbox(
 		return nil, status.Error(codes.InvalidArgument, "sandbox template with image is required")
 	}
 
-	labels := mergeMaps(tmpl.GetLabels(), map[string]string{
-		labelSandboxID: sb.GetId(),
-		labelManagedBy: "openshell",
-		labelKagenti:   "agent",
-	})
-
-	obj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "agents.x-k8s.io/v1alpha1",
-			"kind":       "Sandbox",
-			"metadata": map[string]interface{}{
-				"name":      sb.GetName(),
-				"namespace": d.namespace,
-				"labels":    labels,
-			},
-			"spec": d.buildPodSpec(sb),
-		},
+	start := time.Now()
+	if err := d.provisioner.Create(ctx, sb); err != nil {
+		d.metrics.SandboxFailed(sb.GetName(), err.Error())
+		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
+	d.metrics.SandboxCreated(sb.GetName(), spec.GetGpu(), time.Since(start))
 
-	_, err := d.dynamic.Resource(sandboxGVR).
-		Namespace(d.namespace).
-		Create(ctx, obj, metav1.CreateOptions{})
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "create Sandbox CR %s: %v",
-			sb.GetName(), err)
-	}
-
-	d.logger.Info("sandbox created",
-		"name", sb.GetName(),
-		"id", sb.GetId(),
-		"gpu", spec.GetGpu())
 	return &pb.CreateSandboxResponse{}, nil
 }
 
@@ -172,32 +136,21 @@ func (d *Driver) GetSandbox(
 	ctx context.Context,
 	req *pb.GetSandboxRequest,
 ) (*pb.GetSandboxResponse, error) {
-	obj, err := d.dynamic.Resource(sandboxGVR).
-		Namespace(d.namespace).
-		Get(ctx, req.GetSandboxName(), metav1.GetOptions{})
+	sb, err := d.provisioner.Get(ctx, req.GetSandboxName())
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound,
 			"sandbox %s not found: %v", req.GetSandboxName(), err)
 	}
-	return &pb.GetSandboxResponse{Sandbox: objToDriverSandbox(obj)}, nil
+	return &pb.GetSandboxResponse{Sandbox: sb}, nil
 }
 
 func (d *Driver) ListSandboxes(
 	ctx context.Context,
 	_ *pb.ListSandboxesRequest,
 ) (*pb.ListSandboxesResponse, error) {
-	list, err := d.dynamic.Resource(sandboxGVR).
-		Namespace(d.namespace).
-		List(ctx, metav1.ListOptions{
-			LabelSelector: labelSandboxID,
-		})
+	sandboxes, err := d.provisioner.List(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list sandboxes: %v", err)
-	}
-
-	sandboxes := make([]*pb.DriverSandbox, 0, len(list.Items))
-	for i := range list.Items {
-		sandboxes = append(sandboxes, objToDriverSandbox(&list.Items[i]))
 	}
 	return &pb.ListSandboxesResponse{Sandboxes: sandboxes}, nil
 }
@@ -206,11 +159,7 @@ func (d *Driver) StopSandbox(
 	ctx context.Context,
 	req *pb.StopSandboxRequest,
 ) (*pb.StopSandboxResponse, error) {
-	// Delete the sandbox CR; the agent-sandbox controller cleans up the pod.
-	err := d.dynamic.Resource(sandboxGVR).
-		Namespace(d.namespace).
-		Delete(ctx, req.GetSandboxName(), metav1.DeleteOptions{})
-	if err != nil {
+	if err := d.provisioner.Delete(ctx, req.GetSandboxName()); err != nil {
 		return nil, status.Errorf(codes.Internal,
 			"stop sandbox %s: %v", req.GetSandboxName(), err)
 	}
@@ -221,13 +170,12 @@ func (d *Driver) DeleteSandbox(
 	ctx context.Context,
 	req *pb.DeleteSandboxRequest,
 ) (*pb.DeleteSandboxResponse, error) {
-	err := d.dynamic.Resource(sandboxGVR).
-		Namespace(d.namespace).
-		Delete(ctx, req.GetSandboxName(), metav1.DeleteOptions{})
-	if err != nil {
+	if err := d.provisioner.Delete(ctx, req.GetSandboxName()); err != nil {
+		d.metrics.SandboxFailed(req.GetSandboxName(), err.Error())
 		return nil, status.Errorf(codes.Internal,
 			"delete sandbox %s: %v", req.GetSandboxName(), err)
 	}
+	d.metrics.SandboxDeleted(req.GetSandboxName())
 	d.logger.Info("sandbox deleted", "name", req.GetSandboxName(), "id", req.GetSandboxId())
 	return &pb.DeleteSandboxResponse{Deleted: true}, nil
 }
@@ -236,73 +184,41 @@ func (d *Driver) ResolveSandboxEndpoint(
 	ctx context.Context,
 	req *pb.ResolveSandboxEndpointRequest,
 ) (*pb.ResolveSandboxEndpointResponse, error) {
-	sb := req.GetSandbox()
-
-	// Try pod IP via the instance_id (agent pod name).
-	if sts := sb.GetStatus(); sts != nil && sts.GetInstanceId() != "" {
-		pod, err := d.clientset.CoreV1().Pods(d.namespace).
-			Get(ctx, sts.GetInstanceId(), metav1.GetOptions{})
-		if err != nil {
-			d.logger.Warn("pod lookup failed, falling back to DNS",
-				"pod", sts.GetInstanceId(), "error", err)
-		} else if pod.Status.PodIP != "" {
-			return &pb.ResolveSandboxEndpointResponse{
-				Endpoint: &pb.SandboxEndpoint{
-					Target: &pb.SandboxEndpoint_Ip{Ip: pod.Status.PodIP},
-					Port:   sshPort,
-				},
-			}, nil
-		}
+	endpoint, err := d.provisioner.ResolveEndpoint(ctx, req.GetSandbox())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "resolve endpoint: %v", err)
 	}
-
-	// Fallback: cluster DNS.
-	return &pb.ResolveSandboxEndpointResponse{
-		Endpoint: &pb.SandboxEndpoint{
-			Target: &pb.SandboxEndpoint_Host{
-				Host: fmt.Sprintf("%s.%s.svc.cluster.local",
-					sb.GetName(), d.namespace),
-			},
-			Port: sshPort,
-		},
-	}, nil
+	return &pb.ResolveSandboxEndpointResponse{Endpoint: endpoint}, nil
 }
 
 func (d *Driver) WatchSandboxes(
 	_ *pb.WatchSandboxesRequest,
 	stream grpc.ServerStreamingServer[pb.WatchSandboxesEvent],
 ) error {
-	watcher, err := d.dynamic.Resource(sandboxGVR).
-		Namespace(d.namespace).
-		Watch(stream.Context(), metav1.ListOptions{
-			LabelSelector: labelSandboxID,
-		})
+	ch, err := d.provisioner.Watch(stream.Context())
 	if err != nil {
-		return status.Errorf(codes.Internal, "start watcher: %v", err)
+		return status.Errorf(codes.Internal, "%v", err)
 	}
-	defer watcher.Stop()
 
-	for event := range watcher.ResultChan() {
-		obj, ok := event.Object.(*unstructured.Unstructured)
-		if !ok {
-			continue
-		}
-
+	for event := range ch {
 		var evt *pb.WatchSandboxesEvent
+
 		switch event.Type {
-		case watch.Added, watch.Modified:
+		case WatchEventUpdated:
+			d.metrics.WatchEventReceived("updated")
 			evt = &pb.WatchSandboxesEvent{
 				Payload: &pb.WatchSandboxesEvent_Sandbox{
 					Sandbox: &pb.WatchSandboxesSandboxEvent{
-						Sandbox: objToDriverSandbox(obj),
+						Sandbox: event.Sandbox,
 					},
 				},
 			}
-		case watch.Deleted:
-			sandboxID := obj.GetLabels()[labelSandboxID]
+		case WatchEventDeleted:
+			d.metrics.WatchEventReceived("deleted")
 			evt = &pb.WatchSandboxesEvent{
 				Payload: &pb.WatchSandboxesEvent_Deleted{
 					Deleted: &pb.WatchSandboxesDeletedEvent{
-						SandboxId: sandboxID,
+						SandboxId: event.SandboxID,
 					},
 				},
 			}
@@ -316,68 +232,4 @@ func (d *Driver) WatchSandboxes(
 	}
 
 	return nil
-}
-
-// buildPodSpec constructs the Sandbox CR spec from driver-native messages.
-func (d *Driver) buildPodSpec(sb *pb.DriverSandbox) map[string]interface{} {
-	spec := sb.GetSpec()
-	tmpl := spec.GetTemplate()
-
-	container := map[string]interface{}{
-		"name":  "agent",
-		"image": tmpl.GetImage(),
-		"env":   buildEnvList(spec.GetEnvironment(), tmpl.GetEnvironment()),
-		"securityContext": map[string]interface{}{
-			"capabilities": map[string]interface{}{
-				"add": []interface{}{"SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYSLOG"},
-			},
-		},
-	}
-
-	if res := tmpl.GetResources(); res != nil {
-		container["resources"] = buildResources(res, spec.GetGpu())
-	}
-
-	podSpec := map[string]interface{}{
-		"containers": []interface{}{container},
-	}
-
-	// Apply platform_config passthrough fields.
-	if pc := tmpl.GetPlatformConfig(); pc != nil {
-		fields := pc.GetFields()
-		if rcn, ok := fields["runtime_class_name"]; ok {
-			podSpec["runtimeClassName"] = rcn.GetStringValue()
-		}
-	}
-
-	return map[string]interface{}{
-		"podTemplate": map[string]interface{}{
-			"metadata": map[string]interface{}{
-				"labels": mergeMaps(tmpl.GetLabels(), map[string]string{
-					labelSandboxID: sb.GetId(),
-					labelManagedBy: "openshell",
-					labelKagenti:   "agent",
-				}),
-			},
-			"spec": podSpec,
-		},
-	}
-}
-
-// hasGPUCapacity checks whether any node in the cluster has nvidia.com/gpu
-// allocatable.
-func (d *Driver) hasGPUCapacity(ctx context.Context) (bool, error) {
-	nodes, err := d.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return false, err
-	}
-	gpuResource := corev1.ResourceName("nvidia.com/gpu")
-	for _, node := range nodes.Items {
-		if alloc := node.Status.Allocatable; alloc != nil {
-			if q, ok := alloc[gpuResource]; ok && !q.IsZero() {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
 }
