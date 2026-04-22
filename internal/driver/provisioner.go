@@ -348,6 +348,13 @@ func (p *K8sProvisioner) buildFullEnvList(
 		gatewayEnv["OPENSHELL_SSH_HANDSHAKE_SECRET"] = p.cfg.SSHHandshakeSecret
 	}
 
+	// Set inference routing base URL so agent SDKs (Claude Code, OpenAI SDK)
+	// send requests to inference.local instead of the real API endpoint.
+	// The supervisor intercepts inference.local and routes to the real API
+	// with credential injection.
+	gatewayEnv["ANTHROPIC_BASE_URL"] = "https://inference.local/v1"
+	gatewayEnv["OPENAI_BASE_URL"] = "https://inference.local/v1"
+
 	for k, v := range gatewayEnv {
 		envList = append(envList, map[string]interface{}{
 			"name":  k,
