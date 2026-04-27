@@ -234,27 +234,17 @@ func TestValidateSandboxCreate_GPUNoCapacity(t *testing.T) {
 	}
 }
 
-func TestResolveSandboxEndpoint_FallbackDNS(t *testing.T) {
+func TestStopSandbox_Unimplemented(t *testing.T) {
 	d := newTestDriver(t)
-
-	resp, err := d.ResolveSandboxEndpoint(context.Background(),
-		&pb.ResolveSandboxEndpointRequest{
-			Sandbox: &pb.DriverSandbox{
-				Name:      "my-sb",
-				Namespace: "test-ns",
-			},
-		})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := d.StopSandbox(context.Background(), &pb.StopSandboxRequest{
+		SandboxId:   "sb-stop",
+		SandboxName: "stop-me",
+	})
+	if err == nil {
+		t.Fatal("expected error from StopSandbox")
 	}
-
-	host := resp.Endpoint.GetHost()
-	expected := "my-sb.test-ns.svc.cluster.local"
-	if host != expected {
-		t.Errorf("expected DNS fallback %s, got %s", expected, host)
-	}
-	if resp.Endpoint.Port != sshPort {
-		t.Errorf("expected port %d, got %d", sshPort, resp.Endpoint.Port)
+	if s, ok := status.FromError(err); !ok || s.Code() != codes.Unimplemented {
+		t.Errorf("expected Unimplemented, got %v", err)
 	}
 }
 

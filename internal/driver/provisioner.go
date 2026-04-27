@@ -25,7 +25,6 @@ const (
 	labelSandboxID = "openshell.ai/sandbox-id"
 	labelManagedBy = "openshell.ai/managed-by"
 	labelKagenti   = "kagenti.io/type"
-	sshPort        = 2222
 )
 
 // K8sProvisioner implements SandboxProvisioner using the Kubernetes API. It
@@ -199,34 +198,6 @@ func (p *K8sProvisioner) Watch(ctx context.Context) (<-chan WatchEvent, error) {
 	return ch, nil
 }
 
-// ResolveEndpoint determines the network endpoint for a sandbox. It tries the
-// pod IP first, then falls back to cluster DNS.
-func (p *K8sProvisioner) ResolveEndpoint(ctx context.Context, sb *pb.DriverSandbox) (*pb.SandboxEndpoint, error) {
-	// Try pod IP via the instance_id (agent pod name).
-	if sts := sb.GetStatus(); sts != nil && sts.GetInstanceId() != "" {
-		pod, err := p.clientset.CoreV1().Pods(p.cfg.Namespace).
-			Get(ctx, sts.GetInstanceId(), metav1.GetOptions{})
-		if err != nil {
-			p.logger.Warn("pod lookup failed, falling back to DNS",
-				"pod", sts.GetInstanceId(), "error", err)
-		} else if pod.Status.PodIP != "" {
-			return &pb.SandboxEndpoint{
-				Target: &pb.SandboxEndpoint_Ip{Ip: pod.Status.PodIP},
-				Port:   sshPort,
-			}, nil
-		}
-	}
-
-	// Fallback: cluster DNS.
-	return &pb.SandboxEndpoint{
-		Target: &pb.SandboxEndpoint_Host{
-			Host: fmt.Sprintf("%s.%s.svc.cluster.local",
-				sb.GetName(), p.cfg.Namespace),
-		},
-		Port: sshPort,
-	}, nil
-}
-
 // HasGPUCapacity checks whether any node in the cluster has nvidia.com/gpu
 // allocatable.
 func (p *K8sProvisioner) HasGPUCapacity(ctx context.Context) (bool, error) {
@@ -272,8 +243,10 @@ func (p *K8sProvisioner) buildSandboxSpec(sb *pb.DriverSandbox) map[string]inter
 		"command": []interface{}{p.cfg.SupervisorMountPath + "/openshell-sandbox"},
 		"env":     p.buildFullEnvList(sb, spec, tmpl),
 		"securityContext": map[string]interface{}{
-			"privileged": true,
-			"runAsUser":  int64(0),
+			"runAsUser": int64(0),
+			"capabilities": map[string]interface{}{
+				"add": []interface{}{"SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYSLOG"},
+			},
 		},
 		"volumeMounts": []interface{}{
 			map[string]interface{}{
@@ -322,8 +295,6 @@ func (p *K8sProvisioner) buildSandboxSpec(sb *pb.DriverSandbox) map[string]inter
 	}
 }
 
-// buildFullEnvList merges spec env, template env, and gateway connection env
-// vars that the supervisor needs to connect back to the gateway.
 func (p *K8sProvisioner) buildFullEnvList(
 	sb *pb.DriverSandbox,
 	spec *pb.DriverSandboxSpec,
@@ -332,26 +303,13 @@ func (p *K8sProvisioner) buildFullEnvList(
 	envList := buildEnvList(spec.GetEnvironment(), tmpl.GetEnvironment())
 
 	gatewayEnv := map[string]string{
-		"OPENSHELL_SANDBOX_ID":      sb.GetId(),
-		"OPENSHELL_SANDBOX":         sb.GetName(),
-		"OPENSHELL_SANDBOX_COMMAND": "sleep infinity",
+		"OPENSHELL_SANDBOX_ID": sb.GetId(),
+		"OPENSHELL_SANDBOX":    sb.GetName(),
 	}
 	if p.cfg.GatewayEndpoint != "" {
 		gatewayEnv["OPENSHELL_ENDPOINT"] = p.cfg.GatewayEndpoint
 	}
-	if p.cfg.SSHListenAddr != "" {
-		gatewayEnv["OPENSHELL_SSH_LISTEN_ADDR"] = p.cfg.SSHListenAddr
-	} else {
-		gatewayEnv["OPENSHELL_SSH_LISTEN_ADDR"] = "0.0.0.0:2222"
-	}
-	if p.cfg.SSHHandshakeSecret != "" {
-		gatewayEnv["OPENSHELL_SSH_HANDSHAKE_SECRET"] = p.cfg.SSHHandshakeSecret
-	}
 
-	// Set inference routing base URL so agent SDKs (Claude Code, OpenAI SDK)
-	// send requests to inference.local instead of the real API endpoint.
-	// The supervisor intercepts inference.local and routes to the real API
-	// with credential injection.
 	gatewayEnv["ANTHROPIC_BASE_URL"] = "https://inference.local/v1"
 	gatewayEnv["OPENAI_BASE_URL"] = "https://inference.local/v1"
 

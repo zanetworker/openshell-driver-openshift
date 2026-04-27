@@ -257,27 +257,23 @@ func TestGRPC_GetSandbox_NotFound(t *testing.T) {
 	}
 }
 
-func TestGRPC_ResolveSandboxEndpoint_DNSFallback(t *testing.T) {
+func TestGRPC_StopSandbox_Unimplemented(t *testing.T) {
 	client, cleanup := startTestServer(t)
 	defer cleanup()
 
-	// Sandbox with no pod IP should fall back to cluster DNS.
-	resp, err := client.ResolveSandboxEndpoint(context.Background(),
-		&pb.ResolveSandboxEndpointRequest{
-			Sandbox: &pb.DriverSandbox{
-				Name:      "my-sb",
-				Namespace: "test-ns",
-			},
-		})
-	if err != nil {
-		t.Fatalf("ResolveSandboxEndpoint: %v", err)
+	_, err := client.StopSandbox(context.Background(), &pb.StopSandboxRequest{
+		SandboxId:   "sb-stop",
+		SandboxName: "stop-me",
+	})
+	if err == nil {
+		t.Fatal("expected error from StopSandbox")
 	}
-	expectedHost := "my-sb.test-ns.svc.cluster.local"
-	if resp.Endpoint.GetHost() != expectedHost {
-		t.Errorf("expected DNS fallback %q, got %q", expectedHost, resp.Endpoint.GetHost())
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got %v", err)
 	}
-	if resp.Endpoint.Port != 2222 {
-		t.Errorf("expected port 2222, got %d", resp.Endpoint.Port)
+	if st.Code() != codes.Unimplemented {
+		t.Errorf("expected Unimplemented, got %s", st.Code())
 	}
 }
 

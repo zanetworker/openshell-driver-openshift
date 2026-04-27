@@ -19,7 +19,7 @@
 #      oc adm policy add-scc-to-user privileged -z openshell-sandbox -n default
 #
 # Usage:
-#   # Generate a shared handshake secret
+#   # Generate a shared handshake secret (required by gateway)
 #   export HANDSHAKE_SECRET=$(openssl rand -hex 32)
 #
 #   # Substitute and apply
@@ -102,8 +102,6 @@ spec:
             - quay.io/azaalouk/openshell-supervisor:latest
             - --gateway-endpoint
             - "http://openshell-gateway.default.svc.cluster.local:8080"
-            - --ssh-handshake-secret
-            - "${HANDSHAKE_SECRET}"
           volumeMounts:
             - name: shared-socket
               mountPath: /shared

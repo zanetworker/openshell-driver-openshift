@@ -21,9 +21,6 @@ func (s *stubProvisioner) Get(_ context.Context, _ string) (*pb.DriverSandbox, e
 }
 func (s *stubProvisioner) List(_ context.Context) ([]*pb.DriverSandbox, error) { return nil, nil }
 func (s *stubProvisioner) Watch(_ context.Context) (<-chan WatchEvent, error)   { return nil, nil }
-func (s *stubProvisioner) ResolveEndpoint(_ context.Context, _ *pb.DriverSandbox) (*pb.SandboxEndpoint, error) {
-	return nil, nil
-}
 func (s *stubProvisioner) ValidateCreate(_ context.Context, _ *pb.DriverSandbox) error { return nil }
 func (s *stubProvisioner) HasGPUCapacity(_ context.Context) (bool, error)              { return false, nil }
 

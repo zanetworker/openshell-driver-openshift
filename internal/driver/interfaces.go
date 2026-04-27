@@ -14,7 +14,6 @@ type SandboxProvisioner interface {
 	Get(ctx context.Context, name string) (*pb.DriverSandbox, error)
 	List(ctx context.Context) ([]*pb.DriverSandbox, error)
 	Watch(ctx context.Context) (<-chan WatchEvent, error)
-	ResolveEndpoint(ctx context.Context, sb *pb.DriverSandbox) (*pb.SandboxEndpoint, error)
 	ValidateCreate(ctx context.Context, sb *pb.DriverSandbox) error
 	HasGPUCapacity(ctx context.Context) (bool, error)
 }

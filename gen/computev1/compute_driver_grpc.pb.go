@@ -22,15 +22,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ComputeDriver_GetCapabilities_FullMethodName        = "/openshell.compute.v1.ComputeDriver/GetCapabilities"
-	ComputeDriver_ValidateSandboxCreate_FullMethodName  = "/openshell.compute.v1.ComputeDriver/ValidateSandboxCreate"
-	ComputeDriver_GetSandbox_FullMethodName             = "/openshell.compute.v1.ComputeDriver/GetSandbox"
-	ComputeDriver_ListSandboxes_FullMethodName          = "/openshell.compute.v1.ComputeDriver/ListSandboxes"
-	ComputeDriver_CreateSandbox_FullMethodName          = "/openshell.compute.v1.ComputeDriver/CreateSandbox"
-	ComputeDriver_StopSandbox_FullMethodName            = "/openshell.compute.v1.ComputeDriver/StopSandbox"
-	ComputeDriver_DeleteSandbox_FullMethodName          = "/openshell.compute.v1.ComputeDriver/DeleteSandbox"
-	ComputeDriver_ResolveSandboxEndpoint_FullMethodName = "/openshell.compute.v1.ComputeDriver/ResolveSandboxEndpoint"
-	ComputeDriver_WatchSandboxes_FullMethodName         = "/openshell.compute.v1.ComputeDriver/WatchSandboxes"
+	ComputeDriver_GetCapabilities_FullMethodName       = "/openshell.compute.v1.ComputeDriver/GetCapabilities"
+	ComputeDriver_ValidateSandboxCreate_FullMethodName = "/openshell.compute.v1.ComputeDriver/ValidateSandboxCreate"
+	ComputeDriver_GetSandbox_FullMethodName            = "/openshell.compute.v1.ComputeDriver/GetSandbox"
+	ComputeDriver_ListSandboxes_FullMethodName         = "/openshell.compute.v1.ComputeDriver/ListSandboxes"
+	ComputeDriver_CreateSandbox_FullMethodName         = "/openshell.compute.v1.ComputeDriver/CreateSandbox"
+	ComputeDriver_StopSandbox_FullMethodName           = "/openshell.compute.v1.ComputeDriver/StopSandbox"
+	ComputeDriver_DeleteSandbox_FullMethodName         = "/openshell.compute.v1.ComputeDriver/DeleteSandbox"
+	ComputeDriver_WatchSandboxes_FullMethodName        = "/openshell.compute.v1.ComputeDriver/WatchSandboxes"
 )
 
 // ComputeDriverClient is the client API for ComputeDriver service.
@@ -60,8 +59,6 @@ type ComputeDriverClient interface {
 	StopSandbox(ctx context.Context, in *StopSandboxRequest, opts ...grpc.CallOption) (*StopSandboxResponse, error)
 	// Tear down platform resources for a sandbox.
 	DeleteSandbox(ctx context.Context, in *DeleteSandboxRequest, opts ...grpc.CallOption) (*DeleteSandboxResponse, error)
-	// Resolve the current endpoint for sandbox exec/SSH transport.
-	ResolveSandboxEndpoint(ctx context.Context, in *ResolveSandboxEndpointRequest, opts ...grpc.CallOption) (*ResolveSandboxEndpointResponse, error)
 	// Stream sandbox observations from the platform.
 	WatchSandboxes(ctx context.Context, in *WatchSandboxesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchSandboxesEvent], error)
 }
@@ -144,16 +141,6 @@ func (c *computeDriverClient) DeleteSandbox(ctx context.Context, in *DeleteSandb
 	return out, nil
 }
 
-func (c *computeDriverClient) ResolveSandboxEndpoint(ctx context.Context, in *ResolveSandboxEndpointRequest, opts ...grpc.CallOption) (*ResolveSandboxEndpointResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ResolveSandboxEndpointResponse)
-	err := c.cc.Invoke(ctx, ComputeDriver_ResolveSandboxEndpoint_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *computeDriverClient) WatchSandboxes(ctx context.Context, in *WatchSandboxesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchSandboxesEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &ComputeDriver_ServiceDesc.Streams[0], ComputeDriver_WatchSandboxes_FullMethodName, cOpts...)
@@ -200,8 +187,6 @@ type ComputeDriverServer interface {
 	StopSandbox(context.Context, *StopSandboxRequest) (*StopSandboxResponse, error)
 	// Tear down platform resources for a sandbox.
 	DeleteSandbox(context.Context, *DeleteSandboxRequest) (*DeleteSandboxResponse, error)
-	// Resolve the current endpoint for sandbox exec/SSH transport.
-	ResolveSandboxEndpoint(context.Context, *ResolveSandboxEndpointRequest) (*ResolveSandboxEndpointResponse, error)
 	// Stream sandbox observations from the platform.
 	WatchSandboxes(*WatchSandboxesRequest, grpc.ServerStreamingServer[WatchSandboxesEvent]) error
 	mustEmbedUnimplementedComputeDriverServer()
@@ -234,9 +219,6 @@ func (UnimplementedComputeDriverServer) StopSandbox(context.Context, *StopSandbo
 }
 func (UnimplementedComputeDriverServer) DeleteSandbox(context.Context, *DeleteSandboxRequest) (*DeleteSandboxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteSandbox not implemented")
-}
-func (UnimplementedComputeDriverServer) ResolveSandboxEndpoint(context.Context, *ResolveSandboxEndpointRequest) (*ResolveSandboxEndpointResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ResolveSandboxEndpoint not implemented")
 }
 func (UnimplementedComputeDriverServer) WatchSandboxes(*WatchSandboxesRequest, grpc.ServerStreamingServer[WatchSandboxesEvent]) error {
 	return status.Error(codes.Unimplemented, "method WatchSandboxes not implemented")
@@ -388,24 +370,6 @@ func _ComputeDriver_DeleteSandbox_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ComputeDriver_ResolveSandboxEndpoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ResolveSandboxEndpointRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ComputeDriverServer).ResolveSandboxEndpoint(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: ComputeDriver_ResolveSandboxEndpoint_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ComputeDriverServer).ResolveSandboxEndpoint(ctx, req.(*ResolveSandboxEndpointRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _ComputeDriver_WatchSandboxes_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(WatchSandboxesRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -451,10 +415,6 @@ var ComputeDriver_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteSandbox",
 			Handler:    _ComputeDriver_DeleteSandbox_Handler,
-		},
-		{
-			MethodName: "ResolveSandboxEndpoint",
-			Handler:    _ComputeDriver_ResolveSandboxEndpoint_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

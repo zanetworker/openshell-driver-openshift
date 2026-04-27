@@ -138,28 +138,6 @@ func TestK8sProvisioner_ValidateCreate_NoGPURequested(t *testing.T) {
 	}
 }
 
-func TestK8sProvisioner_ResolveEndpoint_DNS(t *testing.T) {
-	p := newProvisionerForTest(t)
-	ctx := context.Background()
-
-	sb := &pb.DriverSandbox{
-		Name:      "my-sb",
-		Namespace: "test-ns",
-	}
-
-	ep, err := p.ResolveEndpoint(ctx, sb)
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	expected := "my-sb.test-ns.svc.cluster.local"
-	if ep.GetHost() != expected {
-		t.Errorf("expected %s, got %s", expected, ep.GetHost())
-	}
-	if ep.Port != sshPort {
-		t.Errorf("expected port %d, got %d", sshPort, ep.Port)
-	}
-}
-
 func TestBuildSandboxSpec_SupervisorInitContainer(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Namespace = "test-ns"
@@ -231,13 +209,27 @@ func TestBuildSandboxSpec_SupervisorInitContainer(t *testing.T) {
 		t.Errorf("expected command [%s], got %v", expectedCmd, agentCmd)
 	}
 
-	// Verify security context (privileged mode for OpenShift).
+	// Verify security context uses granular capabilities.
 	secCtx := agentC["securityContext"].(map[string]interface{})
 	if secCtx["runAsUser"] != int64(0) {
 		t.Errorf("expected runAsUser 0, got %v", secCtx["runAsUser"])
 	}
-	if secCtx["privileged"] != true {
-		t.Errorf("expected privileged true, got %v", secCtx["privileged"])
+	caps, ok := secCtx["capabilities"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected capabilities in securityContext")
+	}
+	addCaps, ok := caps["add"].([]interface{})
+	if !ok {
+		t.Fatal("expected capabilities.add list")
+	}
+	expectedCaps := []string{"SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYSLOG"}
+	if len(addCaps) != len(expectedCaps) {
+		t.Fatalf("expected %d capabilities, got %d", len(expectedCaps), len(addCaps))
+	}
+	for i, want := range expectedCaps {
+		if addCaps[i] != want {
+			t.Errorf("capability[%d] = %v, want %s", i, addCaps[i], want)
+		}
 	}
 
 	// Verify volume mounts on agent container.

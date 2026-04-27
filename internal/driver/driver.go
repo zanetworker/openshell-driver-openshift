@@ -169,14 +169,11 @@ func (d *Driver) ListSandboxes(
 }
 
 func (d *Driver) StopSandbox(
-	ctx context.Context,
-	req *pb.StopSandboxRequest,
+	_ context.Context,
+	_ *pb.StopSandboxRequest,
 ) (*pb.StopSandboxResponse, error) {
-	if err := d.provisioner.Delete(ctx, req.GetSandboxName()); err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"stop sandbox %s: %v", req.GetSandboxName(), err)
-	}
-	return &pb.StopSandboxResponse{}, nil
+	return nil, status.Error(codes.Unimplemented,
+		"stop sandbox is not implemented by the openshift compute driver")
 }
 
 func (d *Driver) DeleteSandbox(
@@ -191,17 +188,6 @@ func (d *Driver) DeleteSandbox(
 	d.metrics.SandboxDeleted(req.GetSandboxName())
 	d.logger.Info("sandbox deleted", "name", req.GetSandboxName(), "id", req.GetSandboxId())
 	return &pb.DeleteSandboxResponse{Deleted: true}, nil
-}
-
-func (d *Driver) ResolveSandboxEndpoint(
-	ctx context.Context,
-	req *pb.ResolveSandboxEndpointRequest,
-) (*pb.ResolveSandboxEndpointResponse, error) {
-	endpoint, err := d.provisioner.ResolveEndpoint(ctx, req.GetSandbox())
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "resolve endpoint: %v", err)
-	}
-	return &pb.ResolveSandboxEndpointResponse{Endpoint: endpoint}, nil
 }
 
 func (d *Driver) WatchSandboxes(

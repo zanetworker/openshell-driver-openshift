@@ -32,10 +32,6 @@ func main() {
 		"Mount path for the supervisor binary volume in the agent container")
 	flag.StringVar(&cfg.GatewayEndpoint, "gateway-endpoint", cfg.GatewayEndpoint,
 		"Gateway gRPC endpoint for supervisor callback (OPENSHELL_ENDPOINT)")
-	flag.StringVar(&cfg.SSHListenAddr, "ssh-listen-addr", "0.0.0.0:2222",
-		"SSH listen address inside sandbox (OPENSHELL_SSH_LISTEN_ADDR)")
-	flag.StringVar(&cfg.SSHHandshakeSecret, "ssh-handshake-secret", cfg.SSHHandshakeSecret,
-		"Shared secret for gateway-to-sandbox SSH handshake")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
